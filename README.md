@@ -38,10 +38,11 @@ block of text.
 > work the same as `2.x` and higher.
 
 > [!NOTE]
-> Version 2.0.0 of `react-native-uitextview` is tested against and used in production with React Nave 0.79. No other versions
-> are officially supported. As there have been a number of changes to the text layout engine in the new architecture, things
-> may be broken if you are not using this version of React Native with this package. Generally, these problems are inside of
-> `RNUITextViewShadowNode.cpp`.
+> Version 2.x of `react-native-uitextview` is currently tested against and used in production with React Native 0.81.5. Please
+> keep this library and your host application on the same React Native minor release. Metro will otherwise try to resolve
+> internal modules (for example `./Libraries/Core/registerCallableModule`) from whichever copy of React Native is closest in
+> the file tree, which can cause bundling errors when linking a local checkout of this repo. Most incompatibilities surface
+> inside of `RNUITextViewShadowNode.cpp`.
 
 ```sh
 yarn add react-native-uitextview
