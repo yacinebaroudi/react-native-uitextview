@@ -26,9 +26,11 @@ function UITextViewChild({
   style,
   children,
   onSelectionChange,
+  paragraphSpacing,
   ...rest
 }: TextProps & {
   uiTextView?: boolean
+  paragraphSpacing?: number
   onSelectionChange?: (event: {
     nativeEvent: {target: number; start: number; end: number}
   }) => void
@@ -59,6 +61,7 @@ function UITextViewChild({
           {...rest}
           // ellipsizeMode={rest.ellipsizeMode ?? rest.lineBreakMode ?? 'tail'}
           style={[flattenedStyle]}
+          paragraphSpacing={paragraphSpacing}
           onSelectionChange={handleSelectionChange}
           // @ts-expect-error Weirdness
           onPress={undefined}
@@ -130,9 +133,17 @@ export function UITextView(
   props: TextProps & {
     uiTextView?: boolean
     /**
+     * Paragraph spacing in points to add after each paragraph.
+     * Uses NSParagraphStyle's paragraphSpacing property natively on iOS.
+     *
+     * @platform ios
+     * @default 0
+     */
+    paragraphSpacing?: number
+    /**
      * Callback fired when text selection changes.
      * Only available on iOS when using uiTextView={true}.
-     * 
+     *
      * @example
      * ```tsx
      * <UITextView

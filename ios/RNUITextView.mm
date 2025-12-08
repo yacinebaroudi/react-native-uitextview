@@ -83,7 +83,23 @@ using namespace facebook::react;
   const auto attrString = _state->getData().attributedString;
   const auto convertedAttrString = RCTNSAttributedStringFromAttributedString(attrString);
 
-  _textView.attributedText = convertedAttrString;
+  // Apply paragraph spacing if specified
+  NSMutableAttributedString *mutableAttrString = nil;
+  if (props.paragraphSpacing > 0) {
+    mutableAttrString = [[NSMutableAttributedString alloc] initWithAttributedString:convertedAttrString];
+    NSMutableParagraphStyle *paragraphStyle = [[NSMutableParagraphStyle alloc] init];
+    paragraphStyle.paragraphSpacing = props.paragraphSpacing;
+
+    // Apply paragraph style to entire string
+    [mutableAttrString addAttribute:NSParagraphStyleAttributeName
+                              value:paragraphStyle
+                              range:NSMakeRange(0, mutableAttrString.length)];
+
+    _textView.attributedText = mutableAttrString;
+  } else {
+    _textView.attributedText = convertedAttrString;
+  }
+
   _textView.frame = _view.frame;
 
   const auto lines = new std::vector<std::string>();

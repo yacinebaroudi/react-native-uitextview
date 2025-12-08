@@ -2,6 +2,7 @@ import codegenNativeComponent from 'react-native/Libraries/Utilities/codegenNati
 import type {ViewProps} from 'react-native'
 import type {
   BubblingEventHandler,
+  Float,
   Int32,
   WithDefault,
 } from 'react-native/Libraries/Types/CodegenTypes'
@@ -32,10 +33,18 @@ interface NativeProps extends ViewProps {
   allowFontScaling?: WithDefault<boolean, true>
   ellipsizeMode?: WithDefault<EllipsizeMode, 'tail'>
   selectable?: boolean
+  /**
+   * Paragraph spacing in points to add after each paragraph.
+   * Uses NSParagraphStyle's paragraphSpacing property natively on iOS.
+   *
+   * @platform ios
+   * @default 0
+   */
+  paragraphSpacing?: WithDefault<Float, 0.0>
   onTextLayout?: BubblingEventHandler<TextLayoutEvent>
   /**
    * Callback fired when the text selection changes.
-   * 
+   *
    * @example
    * ```tsx
    * <UITextView
