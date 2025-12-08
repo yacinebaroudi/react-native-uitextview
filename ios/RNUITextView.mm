@@ -2,6 +2,7 @@
 #import "RNUITextViewShadowNode.h"
 #import "RNUITextViewComponentDescriptor.h"
 #import "RNUITextViewChild.h"
+#import "RNUITextViewWithMenu.h"
 #import <React/RCTConversions.h>
 
 #import <react/renderer/textlayoutmanager/RCTAttributedTextUtils.h>
@@ -18,7 +19,7 @@ using namespace facebook::react;
 
 @implementation RNUITextView{
   UIView * _view;
-  UITextView * _textView;
+  RNUITextViewWithMenu * _textView;
   RNUITextViewShadowNode::ConcreteState::Shared _state;
 }
 
@@ -37,7 +38,7 @@ using namespace facebook::react;
     self.contentView = _view;
     self.clipsToBounds = true;
 
-    _textView = [[UITextView alloc] init];
+    _textView = [[RNUITextViewWithMenu alloc] init];
     _textView.scrollEnabled = false;
     _textView.editable = false;
     _textView.textContainerInset = UIEdgeInsetsZero;
@@ -56,6 +57,19 @@ using namespace facebook::react;
 
     [_textView addGestureRecognizer:pressGestureRecognizer];
     [_textView addGestureRecognizer:longPressGestureRecognizer];
+
+    // Set up onCaptureInsight callback - use NSNotificationCenter to bridge to React Native
+    // RNUITextViewEventBridge (in RNUITextViewManager.mm) listens and forwards to JavaScript
+    _textView.onCaptureInsight = ^(NSString *selectedText, NSRange range) {
+      // Post notification that RNUITextViewEventBridge will forward to React Native
+      [[NSNotificationCenter defaultCenter] postNotificationName:@"RNUITextViewCaptureInsight"
+                                                          object:nil
+                                                        userInfo:@{
+        @"text": selectedText,
+        @"start": @(range.location),
+        @"end": @(range.location + range.length)
+      }];
+    };
   }
 
   return self;
@@ -83,22 +97,38 @@ using namespace facebook::react;
   const auto attrString = _state->getData().attributedString;
   const auto convertedAttrString = RCTNSAttributedStringFromAttributedString(attrString);
 
-  // Apply paragraph spacing if specified
-  NSMutableAttributedString *mutableAttrString = nil;
-  if (props.paragraphSpacing > 0) {
-    mutableAttrString = [[NSMutableAttributedString alloc] initWithAttributedString:convertedAttrString];
-    NSMutableParagraphStyle *paragraphStyle = [[NSMutableParagraphStyle alloc] init];
-    paragraphStyle.paragraphSpacing = props.paragraphSpacing;
+  // Apply paragraph and line spacing for readable text - preserve existing styles
+  NSMutableAttributedString *mutableAttrString = [[NSMutableAttributedString alloc] initWithAttributedString:convertedAttrString];
+  
+  // CRITICAL: Enumerate existing attributes to PRESERVE them
+  [mutableAttrString enumerateAttribute:NSParagraphStyleAttributeName
+                                inRange:NSMakeRange(0, mutableAttrString.length)
+                                options:0
+                             usingBlock:^(NSParagraphStyle * _Nullable value, 
+                                          NSRange range, 
+                                          BOOL * _Nonnull stop) {
+      
+      // Clone existing style OR create new if none exists
+      NSMutableParagraphStyle *newStyle;
+      if (value) {
+          newStyle = [value mutableCopy];  // ← Preserves alignment, RTL, indentation
+      } else {
+          newStyle = [[NSMutableParagraphStyle alloc] init];
+      }
 
-    // Apply paragraph style to entire string
-    [mutableAttrString addAttribute:NSParagraphStyleAttributeName
-                              value:paragraphStyle
-                              range:NSMakeRange(0, mutableAttrString.length)];
+      // REDUCED VALUES: Account for existing \n\n in markdown
+      newStyle.lineSpacing = 4.0;
+      newStyle.paragraphSpacing = (props.paragraphSpacing > 0) 
+          ? props.paragraphSpacing 
+          : 2.0;
+      
+      // Apply modified style back to THIS range only
+      [mutableAttrString addAttribute:NSParagraphStyleAttributeName
+                                value:newStyle
+                                range:range];
+  }];
 
-    _textView.attributedText = mutableAttrString;
-  } else {
-    _textView.attributedText = convertedAttrString;
-  }
+  _textView.attributedText = mutableAttrString;
 
   _textView.frame = _view.frame;
 
@@ -168,6 +198,52 @@ using namespace facebook::react;
 - (void)updateState:(const facebook::react::State::Shared &)state oldState:(const facebook::react::State::Shared &)oldState
 {
   _state = std::static_pointer_cast<const RNUITextViewShadowNode::ConcreteState>(state);
+
+  if (_state) {
+    const auto &props = *std::static_pointer_cast<RNUITextViewProps const>(_props);
+    const auto attrString = _state->getData().attributedString;
+    
+    // Convert to mutable NSAttributedString
+    NSMutableAttributedString *mutableAttrString = 
+        [[RCTNSAttributedStringFromAttributedString(attrString) mutableCopy] autorelease];
+
+    // CRITICAL: Enumerate existing attributes to PRESERVE them
+    [mutableAttrString enumerateAttribute:NSParagraphStyleAttributeName
+                                  inRange:NSMakeRange(0, mutableAttrString.length)
+                                  options:0
+                               usingBlock:^(NSParagraphStyle * _Nullable value, 
+                                            NSRange range, 
+                                            BOOL * _Nonnull stop) {
+        
+        // Clone existing style OR create new if none exists
+        NSMutableParagraphStyle *newStyle;
+        if (value) {
+            newStyle = [value mutableCopy];  // ← Preserves alignment, RTL, indentation
+        } else {
+            newStyle = [[NSMutableParagraphStyle alloc] init];
+        }
+
+        // REDUCED VALUES: Account for existing \n\n in markdown
+        // 4.0 lineSpacing = subtle "article" feel, makes text block "breathe"
+        newStyle.lineSpacing = 4.0;
+        
+        // 2.0 paragraphSpacing = minimal addition since \n\n already provides ~32pt gap
+        // Per Gemini's analysis: rely on markdown newlines for main separation
+        newStyle.paragraphSpacing = (props.paragraphSpacing > 0) 
+            ? props.paragraphSpacing 
+            : 2.0;
+        
+        // Apply modified style back to THIS range only
+        [mutableAttrString addAttribute:NSParagraphStyleAttributeName
+                                  value:newStyle
+                                  range:range];
+    }];
+
+    _textView.attributedText = mutableAttrString;
+    _textView.frame = _view.frame;
+    [_textView setNeedsLayout];
+  }
+  
   [self setNeedsDisplay];
 }
 
