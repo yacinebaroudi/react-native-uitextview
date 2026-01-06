@@ -2,8 +2,8 @@
 
 #include "RNUITextViewChildShadowNode.h"
 
-#include <react/renderer/core/ConcreteComponentDescriptor.h>
-#include <react/renderer/componentregistry/ComponentDescriptorProviderRegistry.h>
+#include "react/renderer/core/ConcreteComponentDescriptor.h"
+#include "react/renderer/componentregistry/ComponentDescriptorProviderRegistry.h"
 
 namespace facebook::react {
 using RNUITextViewChildComponentDescriptor = ConcreteComponentDescriptor<RNUITextViewChildShadowNode>;

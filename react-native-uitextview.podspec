@@ -17,11 +17,29 @@ Pod::Spec.new do |s|
   s.platforms    = { :ios => min_ios_version_supported }
   s.source       = { :git => "https://github.com/bluesky-social/react-native-uitextview.git", :tag => "#{s.version}" }
 
-  # Include module‑authored Obj‑C/Obj‑C++ plus the C++ files that Codegen
-  # writes to build/generated/ios during `pod install`
-  s.source_files = [
-    "ios/**/*.{h,mm,cpp}",
+  # Include ObjC/C++ source files only (NO Swift, NO Markdown - moved to main app)
+  s.source_files = "ios/**/*.{h,mm,cpp}"
+  s.exclude_files = "ios/Markdown/**/*"
+
+  # Mark C++ headers as private to hide them from public interface
+  s.private_header_files = [
+    "ios/RNUITextViewChildComponentDescriptor.h",
+    "ios/RNUITextViewChildShadowNode.h",
+    "ios/RNUITextViewComponentDescriptor.h",
+    "ios/RNUITextViewShadowNode.h"
   ]
+
+  # Include Privacy Manifest
+  s.resource_bundles = {
+    'react-native-uitextview-Privacy' => ['ios/PrivacyInfo.xcprivacy']
+  }
+
+  # Configure C++ compiler settings
+  s.pod_target_xcconfig = {
+    'CLANG_CXX_LANGUAGE_STANDARD' => 'c++20',
+    'CLANG_CXX_LIBRARY' => 'libc++',
+    'DEFINES_MODULE' => 'YES'
+  }
 
   install_modules_dependencies(s)
 

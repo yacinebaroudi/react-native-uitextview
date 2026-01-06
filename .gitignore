@@ -79,3 +79,6 @@ lib/
 
 Podfile.lock
 .xcode.env
+
+# Backup files
+*.bak

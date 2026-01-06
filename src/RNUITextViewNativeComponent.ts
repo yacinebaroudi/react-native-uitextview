@@ -41,6 +41,26 @@ interface NativeProps extends ViewProps {
    * @default 0
    */
   paragraphSpacing?: WithDefault<Float, 0.0>
+
+  /**
+   * Markdown content to render.
+   * If provided, this takes precedence over children text.
+   */
+  markdown?: string
+
+  /**
+   * Text color to apply to non-link text in the UITextView.
+   * This is needed because SwiftyMarkdown strips foregroundColor attributes.
+   * Links preserve their own colors (blue/underlined).
+   *
+   * @platform ios
+   * @example
+   * ```tsx
+   * <UITextView textColor="#FFFFFF">White text with blue links</UITextView>
+   * ```
+   */
+  textColor?: string
+
   onTextLayout?: BubblingEventHandler<TextLayoutEvent>
   /**
    * Callback fired when the text selection changes.
