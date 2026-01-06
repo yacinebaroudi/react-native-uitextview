@@ -11,6 +11,9 @@
 #import <react/renderer/components/RNUITextViewSpec/RCTComponentViewHelpers.h>
 #import "RCTFabricComponentsPlugins.h"
 
+// NO COMPILE-TIME IMPORT - Use runtime reflection to avoid circular dependency
+// #import "Markdown/MarkdownParserBridge.h"
+
 using namespace facebook::react;
 
 @interface RNUITextView () <RCTRNUITextViewViewProtocol, UIGestureRecognizerDelegate, UITextViewDelegate>
@@ -41,9 +44,16 @@ using namespace facebook::react;
     _textView = [[RNUITextViewWithMenu alloc] init];
     _textView.scrollEnabled = false;
     _textView.editable = false;
+
+    // CRITICAL: Enable link interaction for non-editable text
+    // Required for shouldInteractWithURL:inRange:interaction: delegate method to fire
+    _textView.selectable = YES;
+    _textView.userInteractionEnabled = YES;
+
     _textView.textContainerInset = UIEdgeInsetsZero;
     _textView.textContainer.lineFragmentPadding = 0;
     _textView.delegate = self;
+
     [self addSubview:_textView];
 
     const auto longPressGestureRecognizer = [[UILongPressGestureRecognizer alloc] initWithTarget:self
@@ -86,6 +96,106 @@ using namespace facebook::react;
   _textView.attributedText = nil;
 }
 
+- (void)applyMarkdownIfNeeded
+{
+  const auto &props = *std::static_pointer_cast<RNUITextViewProps const>(_props);
+
+  // Only process if markdown prop is provided
+  if (props.markdown.empty()) {
+    return;
+  }
+
+  NSLog(@"🟢 [RNUITextView] applyMarkdownIfNeeded: Processing markdown prop");
+
+  // Convert C++ string to NSString
+  NSString *markdownString = [NSString stringWithUTF8String:props.markdown.c_str()];
+
+  // RUNTIME REFLECTION: Dynamically look up the class from the Main App
+  NSAttributedString *parsedMarkdown = nil;
+  Class bridgeClass = NSClassFromString(@"MarkdownParserBridge");
+
+  if (bridgeClass) {
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+    if ([bridgeClass respondsToSelector:@selector(parseMarkdown:)]) {
+      parsedMarkdown = [bridgeClass performSelector:@selector(parseMarkdown:) withObject:markdownString];
+    }
+    #pragma clang diagnostic pop
+  }
+
+  // Fallback if bridge is missing
+  if (!parsedMarkdown) {
+    NSLog(@"⚠️ [RNUITextView] MarkdownParserBridge not found, using plain text");
+    parsedMarkdown = [[NSAttributedString alloc] initWithString:markdownString];
+  }
+
+  // Create mutable copy for styling
+  NSMutableAttributedString *mutableAttrString = [parsedMarkdown mutableCopy];
+
+  // ============================================================================
+  // REVERTABLE: Force Text Color Application (Fix for Black-on-Blue)
+  // ============================================================================
+  // Explicitly apply the textColor prop to the entire string to override defaults
+  if (!props.textColor.empty()) {
+    NSString *textColorString = [NSString stringWithUTF8String:props.textColor.c_str()];
+    if (textColorString.length > 0) {
+       // Convert hex string to UIColor
+       NSString *hexString = [textColorString stringByReplacingOccurrencesOfString:@"#" withString:@""];
+       unsigned int rgbValue = 0;
+       NSScanner *scanner = [NSScanner scannerWithString:hexString];
+       [scanner scanHexInt:&rgbValue];
+
+       CGFloat red = ((rgbValue & 0xFF0000) >> 16) / 255.0;
+       CGFloat green = ((rgbValue & 0x00FF00) >> 8) / 255.0;
+       CGFloat blue = (rgbValue & 0x0000FF) / 255.0;
+
+       UIColor *textColor = [UIColor colorWithRed:red green:green blue:blue alpha:1.0];
+
+       // Force apply to entire range - this overrides ANY internal color
+       [mutableAttrString addAttribute:NSForegroundColorAttributeName
+                                 value:textColor
+                                 range:NSMakeRange(0, mutableAttrString.length)];
+
+       // Also update the view's property for good measure
+       _textView.textColor = textColor;
+    }
+  }
+  // ============================================================================
+  // END REVERTABLE: Force Text Color Application
+  // ============================================================================
+
+  // Apply paragraph spacing fixes
+  [mutableAttrString enumerateAttribute:NSParagraphStyleAttributeName
+                                inRange:NSMakeRange(0, mutableAttrString.length)
+                                options:0
+                             usingBlock:^(NSParagraphStyle * _Nullable value,
+                                          NSRange range,
+                                          BOOL * _Nonnull stop) {
+
+      NSMutableParagraphStyle *newStyle;
+      if (value) {
+          newStyle = [value mutableCopy];
+      } else {
+          newStyle = [[NSMutableParagraphStyle alloc] init];
+      }
+
+      newStyle.lineSpacing = 4.0;
+      newStyle.paragraphSpacing = (props.paragraphSpacing > 0)
+          ? props.paragraphSpacing
+          : 2.0;
+
+      [mutableAttrString addAttribute:NSParagraphStyleAttributeName
+                                value:newStyle
+                                range:range];
+  }];
+
+  _textView.attributedText = mutableAttrString;
+
+  // FORCE LAYOUT UPDATE to fix cutoff issues
+  [_textView setNeedsLayout];
+  [_textView layoutIfNeeded];
+}
+
 - (void)drawRect:(CGRect)rect
 {
   if (!_state) {
@@ -94,57 +204,101 @@ using namespace facebook::react;
 
   const auto &props = *std::static_pointer_cast<RNUITextViewProps const>(_props);
 
-  const auto attrString = _state->getData().attributedString;
-  const auto convertedAttrString = RCTNSAttributedStringFromAttributedString(attrString);
+  // FIX: Only overwrite text if markdown prop is NOT present
+  // If markdown is provided, preserve the SwiftyMarkdown formatted text set by applyMarkdownIfNeeded
+  NSAttributedString *convertedAttrString = nil;
+  if (props.markdown.empty()) {
+    const auto attrString = _state->getData().attributedString;
+    convertedAttrString = RCTNSAttributedStringFromAttributedString(attrString);
 
-  // Apply paragraph and line spacing for readable text - preserve existing styles
-  NSMutableAttributedString *mutableAttrString = [[NSMutableAttributedString alloc] initWithAttributedString:convertedAttrString];
-  
-  // CRITICAL: Enumerate existing attributes to PRESERVE them
-  [mutableAttrString enumerateAttribute:NSParagraphStyleAttributeName
-                                inRange:NSMakeRange(0, mutableAttrString.length)
-                                options:0
-                             usingBlock:^(NSParagraphStyle * _Nullable value, 
-                                          NSRange range, 
-                                          BOOL * _Nonnull stop) {
-      
-      // Clone existing style OR create new if none exists
-      NSMutableParagraphStyle *newStyle;
-      if (value) {
-          newStyle = [value mutableCopy];  // ← Preserves alignment, RTL, indentation
-      } else {
-          newStyle = [[NSMutableParagraphStyle alloc] init];
-      }
+    // Apply paragraph and line spacing for readable text - preserve existing styles
+    NSMutableAttributedString *mutableAttrString = [[NSMutableAttributedString alloc] initWithAttributedString:convertedAttrString];
 
-      // REDUCED VALUES: Account for existing \n\n in markdown
-      newStyle.lineSpacing = 4.0;
-      newStyle.paragraphSpacing = (props.paragraphSpacing > 0) 
-          ? props.paragraphSpacing 
-          : 2.0;
-      
-      // Apply modified style back to THIS range only
-      [mutableAttrString addAttribute:NSParagraphStyleAttributeName
-                                value:newStyle
-                                range:range];
-  }];
+    // CRITICAL: Enumerate existing attributes to PRESERVE them
+    [mutableAttrString enumerateAttribute:NSParagraphStyleAttributeName
+                                  inRange:NSMakeRange(0, mutableAttrString.length)
+                                  options:0
+                               usingBlock:^(NSParagraphStyle * _Nullable value,
+                                            NSRange range,
+                                            BOOL * _Nonnull stop) {
 
-  _textView.attributedText = mutableAttrString;
+        // Clone existing style OR create new if none exists
+        NSMutableParagraphStyle *newStyle;
+        if (value) {
+            newStyle = [value mutableCopy];  // ← Preserves alignment, RTL, indentation
+        } else {
+            newStyle = [[NSMutableParagraphStyle alloc] init];
+        }
 
-  _textView.frame = _view.frame;
+        // REDUCED VALUES: Account for existing \n\n in markdown
+        newStyle.lineSpacing = 4.0;
+        newStyle.paragraphSpacing = (props.paragraphSpacing > 0)
+            ? props.paragraphSpacing
+            : 2.0;
+
+        // Apply modified style back to THIS range only
+        [mutableAttrString addAttribute:NSParagraphStyleAttributeName
+                                  value:newStyle
+                                  range:range];
+    }];
+
+    _textView.attributedText = mutableAttrString;
+  } else {
+    // Markdown mode: Use the text view's current attributed text for line calculation
+    convertedAttrString = _textView.attributedText;
+  }
+
+  // FIX: For markdown, use sizeThatFits to calculate exact height required for the current width
+  if (props.markdown.empty()) {
+    // Non-markdown: Use existing frame constraint
+    _textView.frame = _view.frame;
+  } else {
+    // Markdown: Let text view expand to fit content
+    CGRect textFrame = _textView.frame;
+
+    // 1. Force width to match parent container (critical for wrapping)
+    CGFloat targetWidth = _view.frame.size.width;
+    textFrame.size.width = targetWidth;
+    textFrame.origin = _view.frame.origin;
+
+    // 2. Explicitly ask text view how tall it needs to be for this width
+    // sizeThatFits is more reliable than contentSize during layout passes
+    CGSize fittingSize = [_textView sizeThatFits:CGSizeMake(targetWidth, CGFLOAT_MAX)];
+
+    // 3. Apply the calculated height
+    // Ensure at least some height if there is content
+    if (fittingSize.height > 0) {
+        textFrame.size.height = fittingSize.height;
+    } else {
+        textFrame.size.height = _view.frame.size.height; // Fallback
+    }
+
+    _textView.frame = textFrame;
+
+    // 4. Update parent view frame to match so Yoga layout knows the size
+    CGRect viewFrame = _view.frame;
+    viewFrame.size.height = textFrame.size.height;
+    _view.frame = viewFrame;
+
+    // 5. Force text container to update exclusion paths/layout
+    _textView.textContainer.size = CGSizeMake(targetWidth, CGFLOAT_MAX);
+  }
 
   const auto lines = new std::vector<std::string>();
-  [_textView.layoutManager enumerateLineFragmentsForGlyphRange:NSMakeRange(0, convertedAttrString.string.length) usingBlock:^(CGRect rect,
+  if (convertedAttrString && convertedAttrString.string.length > 0) {
+    [_textView.layoutManager enumerateLineFragmentsForGlyphRange:NSMakeRange(0, convertedAttrString.string.length) usingBlock:^(CGRect rect,
                                                                                               CGRect usedRect,
                                                                                               NSTextContainer * _Nonnull textContainer,
                                                                                               NSRange glyphRange,
                                                                                               BOOL * _Nonnull stop) {
-    const auto charRange = [self->_textView.layoutManager characterRangeForGlyphRange:glyphRange actualGlyphRange:nil];
-    const auto line = [self->_textView.text substringWithRange:charRange];
+      const auto charRange = [self->_textView.layoutManager characterRangeForGlyphRange:glyphRange actualGlyphRange:nil];
+      const auto line = [self->_textView.text substringWithRange:charRange];
 
-    if (props.numberOfLines && props.numberOfLines > 0 && lines->size() < props.numberOfLines) {
-      lines->push_back(line.UTF8String);
-    }
-  }];
+      if (props.numberOfLines && props.numberOfLines > 0 && lines->size() < props.numberOfLines) {
+        lines->push_back(line.UTF8String);
+      }
+    }];
+  }
 
   if (_eventEmitter != nullptr) {
     std::dynamic_pointer_cast<const facebook::react::RNUITextViewEventEmitter>(_eventEmitter)
@@ -191,6 +345,54 @@ using namespace facebook::react;
     _textView.backgroundColor = RCTUIColorFromSharedColor(newViewProps.backgroundColor);
   }
 
+  // ============================================================================
+  // REVERTABLE: Text Color Support (Alhambra Theme Integration)
+  // ============================================================================
+  // Handle textColor prop changes - converts hex string to UIColor
+  // This allows React Native (which knows Alhambra theme) to control native text color
+  if (oldViewProps.textColor != newViewProps.textColor) {
+    // Codegen generates textColor as std::string (optional)
+    if (!newViewProps.textColor.empty()) {
+      NSString *textColorString = [NSString stringWithUTF8String:newViewProps.textColor.c_str()];
+
+      if (textColorString && textColorString.length > 0) {
+        // Convert hex string to UIColor
+        // Remove # if present
+        NSString *hexString = [textColorString stringByReplacingOccurrencesOfString:@"#" withString:@""];
+
+        // Parse hex to RGB (supports 6-digit hex: RRGGBB)
+        unsigned int rgbValue = 0;
+        NSScanner *scanner = [NSScanner scannerWithString:hexString];
+        [scanner scanHexInt:&rgbValue];
+
+        CGFloat red = ((rgbValue & 0xFF0000) >> 16) / 255.0;
+        CGFloat green = ((rgbValue & 0x00FF00) >> 8) / 255.0;
+        CGFloat blue = (rgbValue & 0x0000FF) / 255.0;
+
+        UIColor *textColor = [UIColor colorWithRed:red green:green blue:blue alpha:1.0];
+        _textView.textColor = textColor;
+
+#if DEBUG
+        NSLog(@"[RNUITextView] Applied textColor: %@ (from hex: %@)", textColor, textColorString);
+#endif
+      } else {
+        // Fallback to system default if parsing fails
+        _textView.textColor = [UIColor labelColor];
+      }
+    } else {
+      // No textColor provided - use system default
+      _textView.textColor = [UIColor labelColor];
+    }
+  }
+  // ============================================================================
+  // END REVERTABLE: Text Color Support
+  // ============================================================================
+
+  // Handle markdown prop changes
+  if (oldViewProps.markdown != newViewProps.markdown) {
+    [self applyMarkdownIfNeeded];
+  }
+
   [super updateProps:props oldProps:oldProps];
 }
 
@@ -201,49 +403,76 @@ using namespace facebook::react;
 
   if (_state) {
     const auto &props = *std::static_pointer_cast<RNUITextViewProps const>(_props);
-    const auto attrString = _state->getData().attributedString;
-    
-    // Convert to mutable NSAttributedString
-    NSMutableAttributedString *mutableAttrString = 
-        [[RCTNSAttributedStringFromAttributedString(attrString) mutableCopy] autorelease];
 
-    // CRITICAL: Enumerate existing attributes to PRESERVE them
-    [mutableAttrString enumerateAttribute:NSParagraphStyleAttributeName
-                                  inRange:NSMakeRange(0, mutableAttrString.length)
-                                  options:0
-                               usingBlock:^(NSParagraphStyle * _Nullable value, 
-                                            NSRange range, 
-                                            BOOL * _Nonnull stop) {
-        
-        // Clone existing style OR create new if none exists
-        NSMutableParagraphStyle *newStyle;
-        if (value) {
-            newStyle = [value mutableCopy];  // ← Preserves alignment, RTL, indentation
+    // ONLY apply Fabric state if markdown is NOT provided
+    // If markdown is provided, we let updateProps handle the text
+    if (props.markdown.empty()) {
+        NSLog(@"🔴 [RNUITextView] updateState: Applying Fabric state (No markdown prop)");
+
+        const auto attrString = _state->getData().attributedString;
+
+        // Convert to mutable NSAttributedString
+        NSMutableAttributedString *mutableAttrString =
+            [RCTNSAttributedStringFromAttributedString(attrString) mutableCopy];
+
+        // CRITICAL: Enumerate existing attributes to PRESERVE them
+        [mutableAttrString enumerateAttribute:NSParagraphStyleAttributeName
+                                      inRange:NSMakeRange(0, mutableAttrString.length)
+                                      options:0
+                                   usingBlock:^(NSParagraphStyle * _Nullable value,
+                                                NSRange range,
+                                                BOOL * _Nonnull stop) {
+
+            // Clone existing style OR create new if none exists
+            NSMutableParagraphStyle *newStyle;
+            if (value) {
+                newStyle = [value mutableCopy];  // ← Preserves alignment, RTL, indentation
+            } else {
+                newStyle = [[NSMutableParagraphStyle alloc] init];
+            }
+
+            // REDUCED VALUES: Account for existing \n\n in markdown
+            // 4.0 lineSpacing = subtle "article" feel, makes text block "breathe"
+            newStyle.lineSpacing = 4.0;
+
+            // 2.0 paragraphSpacing = minimal addition since \n\n already provides ~32pt gap
+            // Per Gemini's analysis: rely on markdown newlines for main separation
+            newStyle.paragraphSpacing = (props.paragraphSpacing > 0)
+                ? props.paragraphSpacing
+                : 2.0;
+
+            // Apply modified style back to THIS range only
+            [mutableAttrString addAttribute:NSParagraphStyleAttributeName
+                                      value:newStyle
+                                      range:range];
+        }];
+
+        _textView.attributedText = mutableAttrString;
+    } else {
+        // Markdown prop is active - use centralized markdown processing
+        [self applyMarkdownIfNeeded];
+
+        // FIX: For markdown, use UITextView's auto-calculated contentSize for sizing
+        if (_textView.contentSize.height > 0) {
+          CGRect textFrame = _textView.frame;
+          textFrame.size.width = _view.frame.size.width;
+          textFrame.size.height = _textView.contentSize.height;
+          textFrame.origin = _view.frame.origin;
+          _textView.frame = textFrame;
+
+          // Update parent view frame to match
+          CGRect viewFrame = _view.frame;
+          viewFrame.size.height = textFrame.size.height;
+          _view.frame = viewFrame;
         } else {
-            newStyle = [[NSMutableParagraphStyle alloc] init];
+          // Fallback: use view frame if contentSize not yet calculated
+          _textView.frame = _view.frame;
         }
+    }
 
-        // REDUCED VALUES: Account for existing \n\n in markdown
-        // 4.0 lineSpacing = subtle "article" feel, makes text block "breathe"
-        newStyle.lineSpacing = 4.0;
-        
-        // 2.0 paragraphSpacing = minimal addition since \n\n already provides ~32pt gap
-        // Per Gemini's analysis: rely on markdown newlines for main separation
-        newStyle.paragraphSpacing = (props.paragraphSpacing > 0) 
-            ? props.paragraphSpacing 
-            : 2.0;
-        
-        // Apply modified style back to THIS range only
-        [mutableAttrString addAttribute:NSParagraphStyleAttributeName
-                                  value:newStyle
-                                  range:range];
-    }];
-
-    _textView.attributedText = mutableAttrString;
-    _textView.frame = _view.frame;
     [_textView setNeedsLayout];
   }
-  
+
   [self setNeedsDisplay];
 }
 
@@ -340,6 +569,52 @@ using namespace facebook::react;
 #endif
   }
 }
+
+// ============================================================================
+// REVERTABLE: Verse Link Support (Option 1 - Handle verse:// URLs)
+// ============================================================================
+// Handle clicks on verse:// links in attributed text
+// Posts notification that can be caught by React Native bridge
+- (BOOL)textView:(UITextView *)textView shouldInteractWithURL:(NSURL *)URL inRange:(NSRange)characterRange interaction:(UITextItemInteraction)interaction
+{
+  // Only handle verse:// URLs, let others use default behavior
+  if ([URL.scheme isEqualToString:@"verse"]) {
+    // Parse verse://surah/verse URL
+    // For "verse://2/143": host="2", path="/143"
+    NSInteger surah = [URL.host integerValue];
+
+    // Remove leading "/" from path and convert to verse number
+    NSString *pathWithoutSlash = [URL.path stringByReplacingOccurrencesOfString:@"/" withString:@""];
+    NSInteger verse = [pathWithoutSlash integerValue];
+
+    // Validate verse reference
+    if (surah >= 1 && surah <= 114 && verse >= 1) {
+        // Post notification for React Native bridge to handle
+        // Similar pattern to onCaptureInsight
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"RNUITextViewVersePress"
+                                                            object:nil
+                                                          userInfo:@{
+          @"surah": @(surah),
+          @"verse": @(verse),
+          @"viewTag": @(self.tag)
+        }];
+
+#if DEBUG
+        NSLog(@"[RNUITextView] Verse link pressed: %ld:%ld (view tag: %ld)", (long)surah, (long)verse, (long)self.tag);
+        NSLog(@"[RNUITextView] ✅ Posted verse press notification: %ld:%ld (viewTag: %ld)", (long)surah, (long)verse, (long)self.tag);
+#endif
+
+        // Return NO to prevent default URL handling
+        return NO;
+      }
+    }
+
+  // For non-verse URLs, allow default behavior
+  return YES;
+}
+// ============================================================================
+// END REVERTABLE: Verse Link Support
+// ============================================================================
 
 Class<RCTComponentViewProtocol> RNUITextViewCls(void)
 {
